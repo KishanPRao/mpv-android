@@ -9,6 +9,7 @@ package is.xyz.filepicker;
 import is.xyz.mpv.R;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.content.res.TypedArray;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
@@ -19,6 +20,8 @@ import androidx.loader.app.LoaderManager;
 import androidx.loader.content.Loader;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
+
+import android.preference.PreferenceManager;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -79,7 +82,7 @@ public abstract class AbstractFilePickerFragment<T> extends Fragment
         // Set Item Decoration if exists
         configureItemDecoration(inflater, recyclerView);
         // Set adapter
-        mAdapter = new FileItemAdapter<>(this);
+        mAdapter = new FileItemAdapter<>(this, getContext());
         recyclerView.setAdapter(mAdapter);
 
         onChangePath(mCurrentPath);
@@ -226,12 +229,21 @@ public abstract class AbstractFilePickerFragment<T> extends Fragment
         isLoading = false;
         mFiles = data;
         mAdapter.setList(data);
+        SharedPreferences sharedPrefs = PreferenceManager.getDefaultSharedPreferences(getContext());
+        String selectedPath = sharedPrefs.getString("selected_path", null);
+        int scrollPosition = 0;
+        for (int i = 0; i < mFiles.size(); i++) {
+            if (selectedPath != null && selectedPath.contains(getName(mFiles.get(i)))) {
+                scrollPosition = i;
+                break;
+            }
+        }
         onChangePath(mCurrentPath);
         String key = mCurrentPath.toString();
         if (mPositionMap.containsKey(key))
             layoutManager.scrollToPositionWithOffset(mPositionMap.get(key), 0);
         else
-            layoutManager.scrollToPositionWithOffset(0, 0);
+            layoutManager.scrollToPositionWithOffset(scrollPosition, 0);
     }
 
     /**

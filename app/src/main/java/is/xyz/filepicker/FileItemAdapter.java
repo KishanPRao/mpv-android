@@ -9,6 +9,12 @@ package is.xyz.filepicker;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.recyclerview.widget.RecyclerView;
+import is.xyz.mpv.R;
+
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.preference.PreferenceManager;
+import android.util.TypedValue;
 import android.view.ViewGroup;
 
 import java.util.List;
@@ -21,9 +27,17 @@ public class FileItemAdapter<T> extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     protected final LogicHandler<T> mLogic;
     protected List<T> mList = null;
+    protected SharedPreferences mSharedPrefs;
+    protected int mHighlightColor;
+    protected int mDefaultColor;
 
-    public FileItemAdapter(@NonNull LogicHandler<T> logic) {
+    public FileItemAdapter(@NonNull LogicHandler<T> logic, @NonNull Context context) {
         this.mLogic = logic;
+        this.mSharedPrefs = PreferenceManager.getDefaultSharedPreferences(context);
+        mHighlightColor = context.getResources().getColor(R.color.primary);
+        TypedValue typedValue = new TypedValue();
+        context.getTheme().resolveAttribute(android.R.attr.textColorPrimary, typedValue, true);
+        mDefaultColor = typedValue.data;
     }
 
     public void setList(@Nullable List<T> list) {
@@ -44,7 +58,15 @@ public class FileItemAdapter<T> extends RecyclerView.Adapter<RecyclerView.ViewHo
             mLogic.onBindHeaderViewHolder((AbstractFilePickerFragment<T>.HeaderViewHolder) viewHolder);
         } else {
             int pos = headerPosition - 1;
-            mLogic.onBindViewHolder((AbstractFilePickerFragment<T>.DirViewHolder) viewHolder, pos, mList.get(pos));
+            AbstractFilePickerFragment<T>.DirViewHolder dirViewHolder = (AbstractFilePickerFragment<T>.DirViewHolder) viewHolder;
+            String selectedPath = mSharedPrefs.getString("selected_path", null);
+            String path = mLogic.getFullPath(mList.get(pos));
+            if (selectedPath != null && selectedPath.contains(path)) {
+                dirViewHolder.text.setTextColor(mHighlightColor);
+            } else {
+                dirViewHolder.text.setTextColor(mDefaultColor);
+            }
+            mLogic.onBindViewHolder(dirViewHolder, pos, mList.get(pos));
         }
     }
 

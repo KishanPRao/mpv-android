@@ -151,6 +151,9 @@ class MainScreenFragment : Fragment(R.layout.fragment_main_screen) {
     }
 
     private fun playFile(filepath: String) {
+        val sharedPrefsEditor = PreferenceManager.getDefaultSharedPreferences(context).edit()
+        sharedPrefsEditor.putString("selected_path", filepath)
+        sharedPrefsEditor.apply()
         val i: Intent
         if (filepath.startsWith("content://")) {
             i = Intent(Intent.ACTION_VIEW, Uri.parse(filepath))

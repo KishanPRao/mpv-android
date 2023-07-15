@@ -234,6 +234,7 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
 
     private var playbackHasStarted = false
     private var onloadCommands = mutableListOf<Array<String>>()
+    private var filepath: String? = ""
 
     // Activity lifetime
 
@@ -279,7 +280,7 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
         updateOrientation(true)
 
         // Parse the intent
-        val filepath = parsePathFromIntent(intent)
+        filepath = parsePathFromIntent(intent)
         if (intent.action == Intent.ACTION_VIEW) {
             parseIntentExtras(intent.extras)
         }
@@ -293,7 +294,7 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
 
         player.initialize(applicationContext.filesDir.path)
         player.addObserver(this)
-        player.playFile(filepath)
+        filepath?.let { player.playFile(it) }
 
         binding.playbackSeekbar.setOnSeekBarChangeListener(seekBarChangeListener)
 
@@ -316,6 +317,15 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
             Log.w(TAG, "Audio focus not granted")
             onloadCommands.add(arrayOf("set", "pause", "yes"))
         }
+        // TODO
+//        val sharedPrefs = getDefaultSharedPreferences(applicationContext)
+//        val prevPlaybackTime = sharedPrefs.getInt("playback_time", 0)
+//        Log.i(TAG, "Playback time: $prevPlaybackTime")
+//        val selectedPath = sharedPrefs.getString("selected_path", null)
+//        if (selectedPath != null && File(selectedPath).exists()) {
+//            player.timePos = prevPlaybackTime
+//            updatePlaybackPos(prevPlaybackTime)
+//        }
     }
 
     private fun finishWithResult(code: Int, includeTimePos: Boolean = false) {
@@ -509,6 +519,7 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
     private var btnSelected = -1 // dpad navigation
 
     private var mightWantToToggleControls = false
+    private var lastTapTime = 0L
 
     private var useAudioUI = false
     private var lockedUI = false
@@ -675,7 +686,12 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
         if (ev.action == MotionEvent.ACTION_DOWN)
             mightWantToToggleControls = true
         if (ev.action == MotionEvent.ACTION_UP && mightWantToToggleControls) {
-            toggleControls()
+            val now = SystemClock.uptimeMillis()
+            if (now - lastTapTime < TouchGestures.TAP_DURATION) {
+                showControls()
+                lastTapTime = now
+            } else
+                toggleControls()
         }
         return true
     }
@@ -1770,6 +1786,7 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
 
             /* Tap gestures */
             PropertyChange.SeekFixed -> {
+                hideControls()
                 val seekTime = diff * 10f
                 val newPos = psc.position_s + seekTime.toInt() // only for display
                 MPVLib.command(arrayOf("seek", seekTime.toString(), "relative"))
@@ -1778,8 +1795,12 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
                 gestureTextView.text = getString(R.string.ui_seek_distance, Utils.prettyTime(newPos), diffText)
                 fadeGestureText()
             }
-            PropertyChange.PlayPause -> player.cyclePause()
+            PropertyChange.PlayPause -> {
+                hideControls()
+                player.cyclePause()
+            }
             PropertyChange.Custom -> {
+                hideControls()
                 val keycode = 0x10002 + diff.toInt()
                 MPVLib.command(arrayOf("keypress", "0x%x".format(keycode)))
             }
