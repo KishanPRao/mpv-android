@@ -24,6 +24,11 @@ class ConfigEditDialog @JvmOverloads constructor(
         val styledAttrs = context.obtainStyledAttributes(attrs, R.styleable.ConfigEditDialog)
         val filename = styledAttrs.getString(R.styleable.ConfigEditDialog_filename)
         configFile = File("${context.filesDir.path}/${filename}")
+        if (!configFile.exists()) {
+            requireNotNull(filename)
+            context.assets.open(filename).bufferedReader()
+                .use { configFile.writeText(it.readText()) }
+        }
 
         styledAttrs.recycle()
     }
