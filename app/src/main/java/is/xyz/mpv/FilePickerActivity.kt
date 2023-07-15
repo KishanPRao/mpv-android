@@ -21,6 +21,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.recyclerview.widget.RecyclerView
+import `is`.xyz.mpv.config.SettingsActivity
 import `is`.xyz.mpv.databinding.FragmentFilepickerChoiceBinding
 import java.io.File
 import java.io.FileFilter
@@ -158,6 +159,10 @@ class FilePickerActivity : AppCompatActivity(), AbstractFilePickerFragment.OnFil
                     this.putBoolean("${PREF_PREFIX}filter_state", !old)
                     apply()
                 }
+                return true
+            }
+            R.id.action_settings -> {
+                startActivity(Intent(applicationContext, SettingsActivity::class.java))
                 return true
             }
             else -> return false
