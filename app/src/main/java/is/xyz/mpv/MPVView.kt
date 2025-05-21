@@ -1,61 +1,49 @@
 package `is`.xyz.mpv
 
 import android.content.Context
-import android.util.AttributeSet
-import android.util.Log
-
-import `is`.xyz.mpv.MPVLib.mpvFormat.*
 import android.os.Build
 import android.os.Environment
 import android.preference.PreferenceManager
+import android.util.AttributeSet
+import android.util.Log
 import android.view.*
-import kotlin.math.abs
+import androidx.core.content.ContextCompat
+import `is`.xyz.mpv.MPVLib.mpvFormat.*
 import kotlin.reflect.KProperty
 
-internal class MPVView(context: Context, attrs: AttributeSet) : SurfaceView(context, attrs), SurfaceHolder.Callback {
-    fun initialize(configDir: String) {
-        MPVLib.create(this.context)
-        MPVLib.setOptionString("config", "yes")
-        MPVLib.setOptionString("config-dir", configDir)
-        initOptions() // do this before init() so user-supplied config can override our choices
-        MPVLib.init()
-        /* Hardcoded options: */
-        // we need to call write-watch-later manually
-        MPVLib.setOptionString("save-position-on-quit", "no")
-        // would crash before the surface is attached
-        MPVLib.setOptionString("force-window", "no")
-        // "no" wouldn't work and "yes" is not intended by the UI
-        MPVLib.setOptionString("idle", "once")
+internal class MPVView(context: Context, attrs: AttributeSet) : BaseMPVView(context, attrs) {
+    override fun initOptions() {
+        val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
 
-        holder.addCallback(this)
-        observeProperties()
-    }
+        // apply phone-optimized defaults
+        MPVLib.setOptionString("profile", "fast")
 
-    private fun initOptions() {
-        val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(this.context)
+        // vo
+        setVo(if (sharedPreferences.getBoolean("gpu_next", false))
+            "gpu-next"
+        else
+            "gpu")
 
         // hwdec
         val hwdec = if (sharedPreferences.getBoolean("hardware_decoding", true))
-            "auto"
+            HWDECS
         else
             "no"
 
         // vo: set display fps as reported by android
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            val disp = wm.defaultDisplay
+            val disp = ContextCompat.getDisplayOrDefault(context)
             val refreshRate = disp.mode.refreshRate
 
             Log.v(TAG, "Display ${disp.displayId} reports FPS of $refreshRate")
-            MPVLib.setOptionString("override-display-fps", refreshRate.toString())
+            MPVLib.setOptionString("display-fps-override", refreshRate.toString())
         } else {
             Log.v(TAG, "Android version too old, disabling refresh rate functionality " +
                        "(${Build.VERSION.SDK_INT} < ${Build.VERSION_CODES.M})")
         }
 
         // set non-complex options
-        data class Property(val preference_name: String, val mpv_option: String)
-
+        data class Property(val preferenceName: String, val mpvOption: String)
         val opts = arrayOf(
                 Property("default_audio_language", "alang"),
                 Property("default_subtitle_language", "slang"),
@@ -74,13 +62,11 @@ internal class MPVView(context: Context, attrs: AttributeSet) : SurfaceView(cont
                 Property("video_tscale_param2", "tscale-param2")
         )
 
-        for ((preference_name, mpv_option) in opts) {
-            val preference = sharedPreferences.getString(preference_name, "")
+        for ((preferenceName, mpvOption) in opts) {
+            val preference = sharedPreferences.getString(preferenceName, "")
             if (!preference.isNullOrBlank())
-                MPVLib.setOptionString(mpv_option, preference)
+                MPVLib.setOptionString(mpvOption, preference)
         }
-
-        // set more options
 
         val debandMode = sharedPreferences.getString("video_debanding", "")
         if (debandMode == "gradfun") {
@@ -104,7 +90,6 @@ internal class MPVView(context: Context, attrs: AttributeSet) : SurfaceView(cont
             MPVLib.setOptionString("vd-lavc-skiploopfilter", "nonkey")
         }
 
-        MPVLib.setOptionString("vo", "gpu")
         MPVLib.setOptionString("gpu-context", "android")
         MPVLib.setOptionString("opengl-es", "yes")
         MPVLib.setOptionString("hwdec", hwdec)
@@ -121,18 +106,13 @@ internal class MPVView(context: Context, attrs: AttributeSet) : SurfaceView(cont
         val screenshotDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
         screenshotDir.mkdirs()
         MPVLib.setOptionString("screenshot-directory", screenshotDir.path)
+        // workaround for <https://github.com/mpv-player/mpv/issues/14651>
+        MPVLib.setOptionString("vd-lavc-film-grain", "cpu")
     }
 
-    fun playFile(filePath: String) {
-        this.filePath = filePath
-    }
-
-    // Called when back button is pressed, or app is shutting down
-    fun destroy() {
-        // Disable surface callbacks to avoid using unintialized mpv state
-        holder.removeCallback(this)
-
-        MPVLib.destroy()
+    override fun postInitOptions() {
+        // we need to call write-watch-later manually
+        MPVLib.setOptionString("save-position-on-quit", "no")
     }
 
     fun onPointerEvent(event: MotionEvent): Boolean {
@@ -140,10 +120,14 @@ internal class MPVView(context: Context, attrs: AttributeSet) : SurfaceView(cont
         if (event.actionMasked == MotionEvent.ACTION_SCROLL) {
             val h = event.getAxisValue(MotionEvent.AXIS_HSCROLL)
             val v = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
-            if (abs(h) > 0)
-                MPVLib.command(arrayOf("keypress", if (h < 0) "WHEEL_LEFT" else "WHEEL_RIGHT"))
-            if (abs(v) > 0)
-                MPVLib.command(arrayOf("keypress", if (v < 0) "WHEEL_DOWN" else "WHEEL_UP"))
+            if (h > 0)
+                MPVLib.command(arrayOf("keypress", "WHEEL_RIGHT", "$h"))
+            else if (h < 0)
+                MPVLib.command(arrayOf("keypress", "WHEEL_LEFT", "${-h}"))
+            if (v > 0)
+                MPVLib.command(arrayOf("keypress", "WHEEL_UP", "$v"))
+            else if (v < 0)
+                MPVLib.command(arrayOf("keypress", "WHEEL_DOWN", "${-v}"))
             return true
         }
         return false
@@ -186,21 +170,23 @@ internal class MPVView(context: Context, attrs: AttributeSet) : SurfaceView(cont
         return true
     }
 
-    private fun observeProperties() {
+    override fun observeProperties() {
         // This observes all properties needed by MPVView, MPVActivity or other classes
         data class Property(val name: String, val format: Int = MPV_FORMAT_NONE)
         val p = arrayOf(
             Property("time-pos", MPV_FORMAT_INT64),
-            Property("duration", MPV_FORMAT_INT64),
+            Property("duration/full", MPV_FORMAT_DOUBLE),
             Property("pause", MPV_FORMAT_FLAG),
+            Property("paused-for-cache", MPV_FORMAT_FLAG),
+            Property("speed", MPV_FORMAT_STRING),
             Property("track-list"),
-            Property("video-params"),
+            Property("video-params/aspect", MPV_FORMAT_DOUBLE),
+            Property("video-params/rotate", MPV_FORMAT_DOUBLE),
             Property("playlist-pos", MPV_FORMAT_INT64),
             Property("playlist-count", MPV_FORMAT_INT64),
-            Property("video-format"),
+            Property("current-tracks/video/image"),
             Property("media-title", MPV_FORMAT_STRING),
-            Property("metadata/by-key/Artist", MPV_FORMAT_STRING),
-            Property("metadata/by-key/Album", MPV_FORMAT_STRING),
+            Property("metadata"),
             Property("loop-playlist"),
             Property("loop-file"),
             Property("shuffle", MPV_FORMAT_FLAG),
@@ -286,18 +272,17 @@ internal class MPVView(context: Context, attrs: AttributeSet) : SurfaceView(cont
         return chapters
     }
 
-    private var filePath: String? = null
-
     // Property getters/setters
 
     var paused: Boolean?
         get() = MPVLib.getPropertyBoolean("pause")
         set(paused) = MPVLib.setPropertyBoolean("pause", paused!!)
 
-    var timePos: Int?
-        get() = MPVLib.getPropertyInt("time-pos")
-        set(progress) = MPVLib.setPropertyInt("time-pos", progress!!)
+    var timePos: Double?
+        get() = MPVLib.getPropertyDouble("time-pos/full")
+        set(progress) = MPVLib.setPropertyDouble("time-pos", progress!!)
 
+    /** name of currently active hardware decoder or "no" */
     val hwdecActive: String
         get() = MPVLib.getPropertyString("hwdec-current") ?: "no"
 
@@ -305,11 +290,31 @@ internal class MPVView(context: Context, attrs: AttributeSet) : SurfaceView(cont
         get() = MPVLib.getPropertyDouble("speed")
         set(speed) = MPVLib.setPropertyDouble("speed", speed!!)
 
+    var subDelay: Double?
+        get() = MPVLib.getPropertyDouble("sub-delay")
+        set(speed) = MPVLib.setPropertyDouble("sub-delay", speed!!)
+
+    var secondarySubDelay: Double?
+        get() = MPVLib.getPropertyDouble("secondary-sub-delay")
+        set(speed) = MPVLib.setPropertyDouble("secondary-sub-delay", speed!!)
+
     val estimatedVfFps: Double?
         get() = MPVLib.getPropertyDouble("estimated-vf-fps")
 
-    val videoAspect: Double?
-        get() = MPVLib.getPropertyDouble("video-params/aspect")
+    /**
+     * Returns the video aspect ratio. Rotation is taken into account.
+     */
+    fun getVideoAspect(): Double? {
+        return MPVLib.getPropertyDouble("video-params/aspect")?.let {
+            if (it < 0.001)
+                return 0.0
+            val rot = MPVLib.getPropertyInt("video-params/rotate") ?: 0
+            if (rot % 180 == 90)
+                1.0 / it
+            else
+                it
+        }
+    }
 
     class TrackDelegate(private val name: String) {
         operator fun getValue(thisRef: Any?, property: KProperty<*>): Int {
@@ -335,7 +340,7 @@ internal class MPVView(context: Context, attrs: AttributeSet) : SurfaceView(cont
     fun cyclePause() = MPVLib.command(arrayOf("cycle", "pause"))
     fun cycleAudio() = MPVLib.command(arrayOf("cycle", "audio"))
     fun cycleSub() = MPVLib.command(arrayOf("cycle", "sub"))
-    fun cycleHwdec() = MPVLib.command(arrayOf("cycle-values", "hwdec", "auto", "no"))
+    fun cycleHwdec() = MPVLib.command(arrayOf("cycle-values", "hwdec", HWDECS, "no"))
 
     fun cycleSpeed() {
 //        val speeds = arrayOf(0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0)
@@ -355,8 +360,7 @@ internal class MPVView(context: Context, attrs: AttributeSet) : SurfaceView(cont
     }
 
     fun cycleRepeat() {
-        val state = getRepeat()
-        when (state) {
+        when (val state = getRepeat()) {
             0, 1 -> {
                 MPVLib.setPropertyString("loop-playlist", if (state == 1) "no" else "inf")
                 MPVLib.setPropertyString("loop-file", if (state == 1) "inf" else "no")
@@ -380,35 +384,10 @@ internal class MPVView(context: Context, attrs: AttributeSet) : SurfaceView(cont
         MPVLib.setPropertyBoolean("shuffle", newState)
     }
 
-    // Surface callbacks
-
-    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-        MPVLib.setPropertyString("android-surface-size", "${width}x$height")
-    }
-
-    override fun surfaceCreated(holder: SurfaceHolder) {
-        Log.w(TAG, "attaching surface")
-        MPVLib.attachSurface(holder.surface)
-        // This forces mpv to render subs/osd/whatever into our surface even if it would ordinarily not
-        MPVLib.setOptionString("force-window", "yes")
-
-        if (filePath != null) {
-            MPVLib.command(arrayOf("loadfile", filePath as String))
-            filePath = null
-        } else {
-            // We disable video output when the context disappears, enable it back
-            MPVLib.setPropertyString("vo", "gpu")
-        }
-    }
-
-    override fun surfaceDestroyed(holder: SurfaceHolder) {
-        Log.w(TAG, "detaching surface")
-        MPVLib.setPropertyString("vo", "null")
-        MPVLib.setOptionString("force-window", "no")
-        MPVLib.detachSurface()
-    }
-
     companion object {
         private const val TAG = "mpv"
+
+        // mpv option `hwdec` is set to this
+        private const val HWDECS = "mediacodec,mediacodec-copy"
     }
 }

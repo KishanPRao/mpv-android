@@ -1,7 +1,6 @@
 package `is`.xyz.mpv
 
 import `is`.xyz.filepicker.AbstractFilePickerFragment
-import android.Manifest
 import android.app.UiModeManager
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -15,12 +14,15 @@ import android.util.Log
 import android.view.*
 import android.widget.PopupMenu
 import android.widget.Toast
+import androidx.activity.addCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.ContextCompat
+import androidx.core.util.Predicate
 import androidx.fragment.app.Fragment
 import androidx.recyclerview.widget.RecyclerView
+import `is`.xyz.filepicker.DocumentPickerFragment
+import `is`.xyz.filepicker.FilePickerFragment
 import `is`.xyz.mpv.config.SettingsActivity
 import `is`.xyz.mpv.databinding.FragmentFilepickerChoiceBinding
 import java.io.File
@@ -34,7 +36,7 @@ class FilePickerActivity : AppCompatActivity(), AbstractFilePickerFragment.OnFil
 
     private var documentOpener = registerForActivityResult(ActivityResultContracts.OpenDocument()) {
         it?.let { uri ->
-            onDocumentPicked(uri, false)
+            finishWithResult(RESULT_OK, uri.toString())
         }
     }
 
@@ -44,6 +46,10 @@ class FilePickerActivity : AppCompatActivity(), AbstractFilePickerFragment.OnFil
 
         setContentView(R.layout.activity_filepicker)
         supportActionBar?.title = ""
+
+        onBackPressedDispatcher.addCallback(this) {
+            onBackPressedImpl()
+        }
 
         // The basic issue we have here is this: https://stackoverflow.com/questions/31190612/
         // Some part of the view hierachy swallows the insets during fragment transitions
@@ -96,6 +102,20 @@ class FilePickerActivity : AppCompatActivity(), AbstractFilePickerFragment.OnFil
         lastSeenInsets?.let { recycler.onApplyWindowInsets(lastSeenInsets) }
     }
 
+    private fun getFilterState(): Boolean {
+        with (PreferenceManager.getDefaultSharedPreferences(this)) {
+            // naming is a legacy leftover
+            return getBoolean("MainActivity_filter_state", false)
+        }
+    }
+
+    private fun saveFilterState(enabled: Boolean) {
+        with (PreferenceManager.getDefaultSharedPreferences(this).edit()) {
+            this.putBoolean("MainActivity_filter_state", enabled)
+            apply()
+        }
+    }
+
     override fun onRequestPermissionsResult(
         requestCode: Int, permissions: Array<out String>,
         grantResults: IntArray
@@ -109,14 +129,22 @@ class FilePickerActivity : AppCompatActivity(), AbstractFilePickerFragment.OnFil
         }
     }
 
+    private fun inflateOptionsMenu(menu: Menu) {
+        menuInflater.inflate(R.menu.menu_filepicker, menu)
+        // document picker does not have a concept of storages
+        if (fragment == null)
+            menu.findItem(R.id.action_external_storage).isVisible = false
+    }
+
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        if (fragment == null) // no menu in doc picker mode
-            return true
         val uiModeManager = getSystemService(UI_MODE_SERVICE) as UiModeManager
-        if (uiModeManager.currentModeType != Configuration.UI_MODE_TYPE_TELEVISION)
-            menuInflater.inflate(R.menu.menu_filepicker, menu)
-        else
-            menu.add(Menu.NONE, Menu.NONE, Menu.NONE, "...") // dummy menu item to indicate presence
+        if (uiModeManager.currentModeType != Configuration.UI_MODE_TYPE_TELEVISION) {
+            inflateOptionsMenu(menu)
+        } else {
+            // add a dummy menu item so the menu icon shows up, even though you can't use it on TV.
+            // it is instead opened via dpad keys
+            menu.add(Menu.NONE, Menu.NONE, Menu.NONE, "...")
+        }
         return true
     }
 
@@ -145,20 +173,20 @@ class FilePickerActivity : AppCompatActivity(), AbstractFilePickerFragment.OnFil
                 return true
             }
             R.id.action_file_filter -> {
-                val old: Boolean
-                with (fragment!!) {
+                var old = false
+                fragment?.apply {
                     old = filterPredicate != null
                     filterPredicate = if (!old) MEDIA_FILE_FILTER else null
+                }
+                fragment2?.apply {
+                    old = filterPredicate != null
+                    filterPredicate = if (!old) MEDIA_DOC_FILTER else null
                 }
                 with (Toast.makeText(this, "", Toast.LENGTH_SHORT)) {
                     setText(if (!old) R.string.notice_show_media_files else R.string.notice_show_all_files)
                     show()
                 }
-                // remember state for next time
-                with (PreferenceManager.getDefaultSharedPreferences(this).edit()) {
-                    this.putBoolean("${PREF_PREFIX}filter_state", !old)
-                    apply()
-                }
+                saveFilterState(!old)
                 return true
             }
             R.id.action_settings -> {
@@ -181,9 +209,7 @@ class FilePickerActivity : AppCompatActivity(), AbstractFilePickerFragment.OnFil
             }
         }
 
-        if (PackageManager.PERMISSION_GRANTED !=
-            ContextCompat.checkSelfPermission(this,
-                Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
+        if (!FilePickerFragment.hasPermission(this, File("/"))) {
             Log.v(TAG, "FilePickerActivity: waiting for file picker permission")
             return
         }
@@ -191,17 +217,16 @@ class FilePickerActivity : AppCompatActivity(), AbstractFilePickerFragment.OnFil
         Log.v(TAG, "FilePickerActivity: showing file picker")
         val sharedPrefs = PreferenceManager.getDefaultSharedPreferences(this)
 
-        if (sharedPrefs.getBoolean("${PREF_PREFIX}filter_state", false)) {
+        if (getFilterState())
             fragment!!.filterPredicate = MEDIA_FILE_FILTER
-        }
 
         var defaultPathStr = intent.getStringExtra("default_path")
-        if (defaultPathStr == null) {
+        if (defaultPathStr.isNullOrEmpty()) {
             // TODO: rework or remove this setting
             defaultPathStr = sharedPrefs.getString("default_file_manager_path",
                 Environment.getExternalStorageDirectory().path)
         }
-        val defaultPath = File(defaultPathStr)
+        val defaultPath = File(defaultPathStr!!)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             // check that the preferred path is inside a storage volume
@@ -226,13 +251,11 @@ class FilePickerActivity : AppCompatActivity(), AbstractFilePickerFragment.OnFil
         }
     }
 
-    override fun dispatchKeyEvent(ev: KeyEvent?): Boolean {
+    override fun dispatchKeyEvent(ev: KeyEvent): Boolean {
         // If up is pressed at the header element display the usual options menu as a popup menu
         // to make it usable on Android TV.
         var openMenu = false
-        if (fragment == null) {
-            // only for file picker
-        } else if (ev?.action == KeyEvent.ACTION_DOWN && ev.keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+        if (ev.action == KeyEvent.ACTION_DOWN && ev.keyCode == KeyEvent.KEYCODE_DPAD_UP) {
             val recycler: RecyclerView = findViewById(android.R.id.list)
             val holder = try {
                 window.currentFocus?.let { recycler.getChildViewHolder(it) }
@@ -246,7 +269,7 @@ class FilePickerActivity : AppCompatActivity(), AbstractFilePickerFragment.OnFil
                 setOnMenuItemClickListener {
                     this@FilePickerActivity.onOptionsItemSelected(it)
                 }
-                inflate(R.menu.menu_filepicker)
+                this@FilePickerActivity.inflateOptionsMenu(menu)
                 show()
             }
             return true
@@ -259,6 +282,17 @@ class FilePickerActivity : AppCompatActivity(), AbstractFilePickerFragment.OnFil
         Log.v(TAG, "FilePickerActivity: showing document picker at \"$root\"")
         assert(fragment2 == null)
         fragment2 = MPVDocumentPickerFragment(root)
+
+        val defaultPathStr = intent.getStringExtra("default_path")
+        if (!defaultPathStr.isNullOrEmpty()) {
+            fragment2!!.apply {
+                goToDir(pathFromString(defaultPathStr))
+            }
+        }
+
+        if (getFilterState())
+            fragment2!!.filterPredicate = MEDIA_DOC_FILTER
+
         with (supportFragmentManager.beginTransaction()) {
             setReorderingAllowed(true)
             add(R.id.fragment_container_view, fragment2!!, null)
@@ -280,7 +314,7 @@ class FilePickerActivity : AppCompatActivity(), AbstractFilePickerFragment.OnFil
         }
     }
 
-    override fun onBackPressed() {
+    private fun onBackPressedImpl() {
         fragment?.apply {
             if (!isBackTop) {
                 goUp()
@@ -297,14 +331,20 @@ class FilePickerActivity : AppCompatActivity(), AbstractFilePickerFragment.OnFil
     }
 
     private fun finishWithResult(code: Int, path: String? = null) {
-        if (path != null) {
-            val result = Intent()
-            result.putExtra("path", path)
-            setResult(code, result)
-            Log.v(TAG, "FilePickerActivity: file picked \"$path\"")
-        } else {
-            setResult(code)
+        val result = Intent()
+        fragment?.apply {
+            result.putExtra("last_path", pathToString(currentDir))
         }
+        fragment2?.apply {
+            result.putExtra("last_path", pathToString(currentDir))
+        }
+        if (path != null) {
+            result.putExtra("path", path)
+            Log.v(TAG, "FilePickerActivity: picked \"$path\"")
+        } else {
+            Log.v(TAG, "FilePickerActivity: nothing picked")
+        }
+        setResult(code, result)
         finish()
     }
 
@@ -313,8 +353,9 @@ class FilePickerActivity : AppCompatActivity(), AbstractFilePickerFragment.OnFil
     override fun onDirPicked(dir: File) = finishWithResult(RESULT_OK, dir.absolutePath)
 
     override fun onDocumentPicked(uri: Uri, isDir: Boolean) {
+        assert(fragment2 != null)
         if (!isDir)
-            finishWithResult(RESULT_OK, uri.toString())
+            finishWithResult(RESULT_OK, fragment2!!.pathToString(uri))
     }
 
     override fun onCancelled() = finishWithResult(RESULT_CANCELED)
@@ -353,16 +394,22 @@ class FilePickerActivity : AppCompatActivity(), AbstractFilePickerFragment.OnFil
     companion object {
         private const val TAG = "mpv"
 
-        // legacy leftover
-        private const val PREF_PREFIX = "MainActivity_"
-
         private val MEDIA_FILE_FILTER = FileFilter { file ->
             if (file.isDirectory) {
                 val contents: Array<String> = file.list() ?: arrayOf()
                 // filter hidden files due to stuff like ".thumbnails"
                 contents.filterNot { it.startsWith('.') }.any()
             } else {
-                Utils.MEDIA_EXTENSIONS.contains(file.extension.toLowerCase())
+                Utils.MEDIA_EXTENSIONS.contains(file.extension.lowercase())
+            }
+        }
+
+        private val MEDIA_DOC_FILTER = Predicate<DocumentPickerFragment.Document> { doc ->
+            if (doc.isDirectory) {
+                true
+            } else {
+                val ext = doc.displayName.substringAfterLast('.', "")
+                Utils.MEDIA_EXTENSIONS.contains(ext.lowercase())
             }
         }
 
